@@ -20,8 +20,8 @@ before writing any configuration.
 | Item | Value |
 |---|---|
 | Date | 2026-10-01 |
-| Host OS | macOS 26.5.2(local) |
-| Docker | 29.7.2(local) |
+| Host OS | macOS 26.5.2 |
+| Docker | 29.7.2 |
 | Keycloak (pinned) | 26.7.4 |
 
 ### Decisions
@@ -66,3 +66,74 @@ hospital-iam/
   .env.example     placeholder values only; real .env is git-ignored
   README.md
 ```
+
+---
+
+## Phase 1: Custom Keycloak image
+
+### Goal
+
+Build a custom image on top of the pinned official Keycloak base, run it, and
+confirm it is healthy. This version runs in development mode, which allows plain
+HTTP and an embedded database, and is intended for local development only.
+
+### Dockerfile (`keycloak/Dockerfile`)
+
+```dockerfile
+FROM quay.io/keycloak/keycloak:26.7.4
+
+ENV KC_HEALTH_ENABLED=true
+
+CMD ["start-dev"]
+```
+
+| Instruction | Purpose |
+|---|---|
+| `FROM quay.io/keycloak/keycloak:26.7.4` | Starts from the official image at the exact pinned version. |
+| `ENV KC_HEALTH_ENABLED=true` | Enables Keycloak's health endpoints. In current releases these are served on the management port (9000), separate from the application port (8080). |
+| `CMD ["start-dev"]` | Default argument passed to the base image's Keycloak launcher. Dev mode allows plain HTTP and uses an embedded throwaway database, which suits local development only. |
+
+The base image already defines the entrypoint (Keycloak's launcher script), so
+the Dockerfile supplies only the command argument.
+
+### Build and run
+
+Admin credentials are not stored in the image. They are supplied at run time
+from a local, git-ignored `.env` file (created from `.env.example`):
+
+```bash
+cp .env.example .env        # then set a local admin password in .env
+
+docker build -t hospital-iam-keycloak:0.1.0 ./keycloak
+
+docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
+  --env-file .env hospital-iam-keycloak:0.1.0
+```
+
+- Port 8080 serves the admin console and realm endpoints.
+- Port 9000 serves the management interface (health endpoints).
+- `--rm` removes the container on exit. In dev mode all data is discarded with
+  it, which is intentional at this stage: configuration is meant to be
+  recreated from files in the repository, not from container state.
+- Passing credentials with `--env-file` at run time keeps secrets out of the
+  image layers.
+
+### Verification
+
+| Check | Command or action | Observed result |
+|---|---|---|
+| Admin console reachable | Open `http://localhost:8080` | Redirects to the Keycloak admin login page |
+| Admin login works | Sign in with the credentials from `.env` | Redirects to `http://localhost:8080/admin/master/console/` |
+| Management interface | Open `http://localhost:9000/` | Shows the Keycloak Management Interface listing the `/health` endpoint |
+| Readiness | `curl -s http://localhost:9000/health/ready` | `status: UP`, with `Graceful Shutdown` and `Keycloak Initialized` checks both UP |
+| OIDC discovery | `curl -s http://localhost:8080/realms/master/.well-known/openid-configuration` | JSON document with issuer `http://localhost:8080/realms/master` and the authorization, token, and introspection endpoints |
+
+The discovery document is the same mechanism the sample applications use later
+to learn Keycloak's endpoints, so a valid response here confirms the OpenID
+Connect layer is working.
+
+### Limitations of this build
+
+- Dev mode only: plain HTTP, embedded database, not suitable for production.
+- No realm configuration is included. The image starts with Keycloak's default
+  `master` realm only.

@@ -45,7 +45,7 @@ patient data is ever used or stored here.
 | Component | Version |
 |---|---|
 | Keycloak | 26.7.4 (`quay.io/keycloak/keycloak:26.7.4`) |
-| Docker | 29.7.2(local Docker installed) |
+| Docker | 29.7.2 |
 
 Images are always referenced by exact tag, never `latest`.
 
@@ -59,6 +59,23 @@ hospital-iam/
   .env.example     placeholder values only; real .env is git-ignored
   README.md
 ```
+
+## Quick start
+
+Prerequisites: Docker.
+
+```bash
+cp .env.example .env        # set a local admin password in .env
+docker build -t hospital-iam-keycloak:0.1.0 ./keycloak
+docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
+  --env-file .env hospital-iam-keycloak:0.1.0
+```
+
+- Admin console: http://localhost:8080 (sign in with the credentials from `.env`)
+- Health check: http://localhost:9000/health/ready
+
+This runs Keycloak in development mode for local use only. Data is discarded
+when the container stops. See `docs/build-process.md` for how the image is built.
 
 ## Secrets
 
