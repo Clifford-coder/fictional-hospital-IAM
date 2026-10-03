@@ -45,7 +45,7 @@ patient data is ever used or stored here.
 | Component | Version |
 |---|---|
 | Keycloak | 26.7.4 (`quay.io/keycloak/keycloak:26.7.4`) |
-| Docker | 29.7.2 |
+| Docker | 29.7.2(local Docker installed) |
 
 Images are always referenced by exact tag, never `latest`.
 

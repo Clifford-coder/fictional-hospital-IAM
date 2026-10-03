@@ -20,8 +20,8 @@ before writing any configuration.
 | Item | Value |
 |---|---|
 | Date | 2026-10-01 |
-| Host OS | macOS 26.5.2 |
-| Docker | 29.7.2 |
+| Host OS | macOS 26.5.2(local) |
+| Docker | 29.7.2(local) |
 | Keycloak (pinned) | 26.7.4 |
 
 ### Decisions
