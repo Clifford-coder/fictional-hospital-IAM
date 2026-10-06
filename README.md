@@ -66,9 +66,9 @@ Prerequisites: Docker.
 
 ```bash
 cp .env.example .env        # set a local admin password in .env
-docker build -t hospital-iam-keycloak:0.2.0 ./keycloak
+docker build -t hospital-iam-keycloak:0.3.0 ./keycloak
 docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
-  --env-file .env hospital-iam-keycloak:0.2.0
+  --env-file .env hospital-iam-keycloak:0.3.0
 ```
 
 - Admin console: http://localhost:8080 (sign in with the credentials from `.env`)
@@ -76,7 +76,8 @@ docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
 - Health check: http://localhost:9000/health/ready
 
 The `hospital` realm and its fictional users are imported automatically on
-startup. This runs Keycloak in development mode for local use only. Data is
+startup. Hospital users must enroll an authenticator app (TOTP) at first
+sign-in. This runs Keycloak in development mode for local use only, and data is
 discarded when the container stops. See `docs/build-process.md` for how the
 image is built.
 
@@ -97,6 +98,17 @@ Nine fictional users are seeded by `keycloak/scripts/seed_users.py`, including
 one with no group and one disabled account for testing. Their shared demo
 password is defined in that script and is for local development only. The
 intended access for each role is in `docs/role-matrix.md`.
+
+## Security configuration
+
+| Control | Setting |
+|---|---|
+| Password policy | Minimum 14 characters; not username or email; last 3 passwords remembered |
+| Multi-factor authentication | TOTP required for every hospital user; users without a device must enroll at login |
+| Brute-force protection | Temporary lockout after 5 failed logins |
+| Sessions | 15-minute idle timeout, 12-hour maximum; 5-minute access tokens |
+
+Details and reasoning are in `docs/build-process.md`.
 
 ## Secrets
 

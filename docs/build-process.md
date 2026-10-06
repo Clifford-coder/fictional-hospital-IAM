@@ -1,7 +1,8 @@
 # Build Process
 
 How the Hospital IAM image and environment were built. This document is
-extended as each part of the project is completed.
+extended as each part of the project is completed, and each phase section records
+the state of the project at the end of that phase.
 
 > **Data policy:** everything in this project is fictional. No real person or
 > patient data is used anywhere.
@@ -60,9 +61,9 @@ deployment, runbooks) fit without rearranging.
 
 ```
 hospital-iam/
-  keycloak/        Dockerfile and realm/hospital-realm.json
+  keycloak/        Dockerfile, realm/hospital-realm.json, scripts/seed_users.py
   app/             proof-of-concept sample application(s)
-  docs/            project documentation
+  docs/            build-process.md, role-matrix.md
   .env.example     placeholder values only; real .env is git-ignored
   README.md
 ```
@@ -262,3 +263,138 @@ returned HTTP 401 and the page showed "Something went wrong".
 | `former.employee` (disabled) cannot sign in | Confirmed |
 | Enabled users can sign in at the hospital realm's account page | Confirmed |
 | `new.hire` is required to change the password at first login | Confirmed |
+
+---
+
+## Phase 3: Password policy and multi-factor authentication
+
+### Goal
+
+Enforce one password policy and mandatory TOTP multi-factor authentication for
+every hospital user from a single place, and capture the configuration in the
+realm file so it is reproduced on every start.
+
+### Configuration
+
+All settings are in the `hospital` realm.
+
+**Password policy** (Authentication > Policies > Password policy)
+
+| Policy | Value |
+|---|---|
+| Minimum length | 14 |
+| Not username | On |
+| Not email | On |
+| Not Recently Used | 3 |
+
+Length is the strongest lever, so it is set high. Forced periodic expiry and
+character-composition rules are deliberately omitted, following NIST SP 800-63B,
+which favors length and breached-password screening over composition rules and
+scheduled rotation. A breached-password blocklist was not configured because it
+requires a file supplied to the container. The seed password (24 characters)
+satisfies this policy.
+
+**Brute-force protection** (Realm settings > Security defenses)
+
+| Setting | Value |
+|---|---|
+| Mode | Lockout temporarily |
+| Maximum login failures | 5 |
+| Wait increment | 1 minute |
+| Maximum wait | 15 minutes |
+
+Temporary lockout was chosen over permanent lockout because permanent lockout
+would let anyone who knows a username lock that staff member out of the system.
+
+**OTP policy** (Authentication > Policies > OTP Policy)
+
+| Setting | Value | Reason |
+|---|---|---|
+| Type | Time-based (TOTP) | Standard authenticator-app mechanism |
+| Algorithm | SHA-1 | Supported by the widest range of authenticator apps |
+| Digits | 6 | Standard |
+| Period | 30 seconds | Standard |
+| Look-around window | 1 | Tolerates small clock drift |
+| Reusable code | Off | A code is accepted once only |
+
+**Sessions and tokens** (Realm settings > Sessions, Tokens)
+
+| Setting | Value | Reason |
+|---|---|---|
+| SSO session idle | 15 minutes | Clinical workstations are shared |
+| SSO session max | 12 hours | Covers a long shift |
+| Access token lifespan | 5 minutes | Shorter lifetime means a revocation takes effect sooner |
+
+### Mandatory OTP authentication flow
+
+Keycloak's built-in browser flow only asks for a one-time code from users who
+have already enrolled one, so a user without a device can sign in with a
+password alone. To close that gap the built-in flow was duplicated as
+`browser-mandatory-otp` and bound as the realm's browser flow. The built-in flow
+is left untouched.
+
+In the copy, the **Browser - Conditional 2FA** subflow (inside the `forms`
+subflow, after `Username Password Form`) is changed from Conditional to
+**Required**, and its `OTP Form` step is **Required**. Result:
+
+- A user who has not enrolled a device is sent to the TOTP setup screen at
+  login rather than being let through.
+- A user who has enrolled is asked for a code at every login.
+- If an administrator deletes a user's OTP credential, that user is sent to
+  enroll again at the next login. This is also the recovery path for a lost or
+  replaced phone.
+
+The WebAuthn step in the subflow remains Disabled. Admin-console labels for
+flows differ slightly between Keycloak releases, so the structure above is the
+reliable description.
+
+An initial attempt used a different structure: disabling the conditional subflow
+and adding a separate required `OTP Form` step under the `forms` subflow. In
+testing it did not present the OTP prompt, and the cause was not investigated.
+The structure above was adopted because it enforced OTP as intended in every
+test.
+
+### Process
+
+1. Start the Phase 2 image (`0.2.0`), sign in to the admin console, and
+   configure the password policy, brute-force protection, OTP policy, flow, and
+   session limits in the `hospital` realm.
+2. Test each behavior before exporting (see Verification).
+3. Export the realm (Realm settings > Action > Partial export, with groups and
+   roles and clients included) over `keycloak/realm/hospital-realm.json`.
+4. Re-run the seed script, because the export omits users:
+
+   ```bash
+   python3 keycloak/scripts/seed_users.py keycloak/realm/hospital-realm.json
+   ```
+
+5. Rebuild and run a fresh container:
+
+   ```bash
+   docker build -t hospital-iam-keycloak:0.3.0 ./keycloak
+
+   docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
+     --env-file .env hospital-iam-keycloak:0.3.0
+   ```
+
+### Verification
+
+Performed first in the running container, then repeated on a fresh container
+built from the committed realm file.
+
+| Check | Result |
+|---|---|
+| First login of a user with no enrolled device (`nina.nurse`) is sent to TOTP setup after the password | Confirmed |
+| After enrollment, every login asks for a code | Confirmed |
+| A wrong code is rejected | Confirmed |
+| A different never-enrolled user (`paul.physician`) is also forced to enroll | Confirmed |
+| After an administrator deletes a user's OTP credential, that user is forced to enroll again rather than signing in with a password alone | Confirmed |
+| A password that violates the policy is rejected when `new.hire` changes the temporary password | Confirmed |
+| Repeated failed logins trigger a temporary lockout | Confirmed |
+| Flow binding, policy values, and session settings survive the export and rebuild | Confirmed |
+
+### Notes
+
+- Dev mode discards data when the container stops, including TOTP enrollments.
+  Each fresh container requires users to enroll again.
+- Enrollment testing used a personal authenticator app with fictional users.
