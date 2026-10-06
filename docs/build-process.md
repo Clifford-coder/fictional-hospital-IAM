@@ -137,3 +137,128 @@ Connect layer is working.
 - Dev mode only: plain HTTP, embedded database, not suitable for production.
 - No realm configuration is included. The image starts with Keycloak's default
   `master` realm only.
+
+---
+
+## Phase 2: Hospital realm
+
+### Goal
+
+Model the hospital's access structure in a dedicated realm and capture it in
+files, so the same realm is recreated identically every time the image starts.
+
+### Design
+
+**Realm.** A realm named `hospital` (display name "Hospital IAM (Fictional)")
+holds all staff identities. The built-in `master` realm is used only to
+administer Keycloak.
+
+**Roles are granted through groups only.** No role is assigned directly to a
+user. Each department group carries one realm role, so a single group change
+grants or removes a person's access, and access can be reviewed by reading group
+membership.
+
+| Group | Realm role | Description |
+|---|---|---|
+| Nursing | `nurse` | Clinical nursing staff |
+| Medicine | `physician` | Physicians |
+| Front Desk | `scheduler` | Scheduling and front-desk staff |
+| Analytics | `report-analyst` | Reporting and analytics staff |
+| Compliance | `compliance-auditor` | Compliance and audit staff |
+| IT | `it-admin` | IT administrators |
+
+All roles are realm roles. No client roles are defined at this stage. The
+intended access for each role is recorded in `role-matrix.md`.
+
+**Fictional seed users.** Nine users, all with `example.org` addresses:
+
+| Username | Group | Purpose |
+|---|---|---|
+| `nina.nurse` | Nursing | Nurse role |
+| `paul.physician` | Medicine | Physician role |
+| `sam.scheduler` | Front Desk | Scheduler role |
+| `rita.reports` | Analytics | Report analyst role |
+| `carl.compliance` | Compliance | Compliance auditor role |
+| `ivy.it` | IT | IT administrator role |
+| `new.hire` | Nursing | Temporary password; exercises the forced password change at first login |
+| `no.group` | none | Can authenticate but holds no job role; applications should deny this user |
+| `former.employee` | Nursing | Disabled account; models an offboarded user who still has a group |
+
+All seeded users share a demo password defined in the seed script. It is
+fictional and for local development only.
+
+### Process
+
+**1. Build the structure in the admin console.** Create the `hospital` realm,
+then the six realm roles, then the six groups, mapping one role to each group on
+the group's Role mapping tab.
+
+**2. Export the realm.** Realm settings > Action > Partial export, with
+"Include groups and roles" and "Include clients" enabled. The download is saved
+as `keycloak/realm/hospital-realm.json`.
+
+**3. Add the users.** Keycloak's partial export does not include users, so
+`keycloak/scripts/seed_users.py` writes them into the exported file:
+
+```bash
+python3 keycloak/scripts/seed_users.py keycloak/realm/hospital-realm.json
+```
+
+The script replaces the realm's `users` list each run (so it is safe to repeat),
+stops with an error if an expected group is missing from the export, and assigns
+every user the realm's default role (see "Issue encountered" below).
+
+**4. Import the realm on startup.** The Dockerfile copies the realm file into
+Keycloak's import directory and starts the server with `--import-realm`:
+
+```dockerfile
+FROM quay.io/keycloak/keycloak:26.7.4
+
+ENV KC_HEALTH_ENABLED=true
+
+# Realm definition (roles, groups, seeded users), placed where Keycloak looks for imports
+COPY realm/hospital-realm.json /opt/keycloak/data/import/hospital-realm.json
+
+# --import-realm imports it on first start (skipped if the realm already exists)
+CMD ["start-dev", "--import-realm"]
+```
+
+Keycloak imports the file only when the realm does not already exist. Because
+the container runs with `--rm` and a throwaway database, every new container
+starts from the file.
+
+**5. Build and run.**
+
+```bash
+docker build -t hospital-iam-keycloak:0.2.0 ./keycloak
+
+docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
+  --env-file .env hospital-iam-keycloak:0.2.0
+```
+
+### Issue encountered
+
+The first version of the seed script did not give users the realm's default
+role (`default-roles-hospital`). Signing in to the hospital realm's account
+console then failed: the token request succeeded, but the account API calls
+returned HTTP 401 and the page showed "Something went wrong".
+
+- **Cause:** users created through a realm import do not receive the default
+  role automatically. That role carries the `view-profile` and `manage-account`
+  permissions the account API requires.
+- **Fix:** the seed script now sets `realmRoles` to the realm's default role for
+  every user.
+- **Note:** administrator sign-in uses the `master` realm, so hospital users
+  cannot sign in to the admin console. Hospital users sign in at
+  `http://localhost:8080/realms/hospital/account`.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| A brand-new container starts with the realm, six roles, six groups, and nine users already present | Confirmed |
+| Group membership grants the matching role (for example `nina.nurse` inherits `nurse` from Nursing) | Confirmed |
+| `no.group` holds no job role | Confirmed |
+| `former.employee` (disabled) cannot sign in | Confirmed |
+| Enabled users can sign in at the hospital realm's account page | Confirmed |
+| `new.hire` is required to change the password at first login | Confirmed |

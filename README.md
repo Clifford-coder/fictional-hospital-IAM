@@ -53,9 +53,9 @@ Images are always referenced by exact tag, never `latest`.
 
 ```
 hospital-iam/
-  keycloak/        Dockerfile and realm/hospital-realm.json
+  keycloak/        Dockerfile, realm/hospital-realm.json, scripts/seed_users.py
   app/             proof-of-concept sample application(s)
-  docs/            project documentation (see docs/build-process.md)
+  docs/            build-process.md, role-matrix.md
   .env.example     placeholder values only; real .env is git-ignored
   README.md
 ```
@@ -66,16 +66,37 @@ Prerequisites: Docker.
 
 ```bash
 cp .env.example .env        # set a local admin password in .env
-docker build -t hospital-iam-keycloak:0.1.0 ./keycloak
+docker build -t hospital-iam-keycloak:0.2.0 ./keycloak
 docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
-  --env-file .env hospital-iam-keycloak:0.1.0
+  --env-file .env hospital-iam-keycloak:0.2.0
 ```
 
 - Admin console: http://localhost:8080 (sign in with the credentials from `.env`)
+- Hospital user sign-in: http://localhost:8080/realms/hospital/account
 - Health check: http://localhost:9000/health/ready
 
-This runs Keycloak in development mode for local use only. Data is discarded
-when the container stops. See `docs/build-process.md` for how the image is built.
+The `hospital` realm and its fictional users are imported automatically on
+startup. This runs Keycloak in development mode for local use only. Data is
+discarded when the container stops. See `docs/build-process.md` for how the
+image is built.
+
+## Hospital realm
+
+Access is granted through groups, and each group carries one realm role.
+
+| Group | Role |
+|---|---|
+| Nursing | `nurse` |
+| Medicine | `physician` |
+| Front Desk | `scheduler` |
+| Analytics | `report-analyst` |
+| Compliance | `compliance-auditor` |
+| IT | `it-admin` |
+
+Nine fictional users are seeded by `keycloak/scripts/seed_users.py`, including
+one with no group and one disabled account for testing. Their shared demo
+password is defined in that script and is for local development only. The
+intended access for each role is in `docs/role-matrix.md`.
 
 ## Secrets
 
