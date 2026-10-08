@@ -1,7 +1,6 @@
 # Role and Permission Matrix
 
-Defines which access each hospital role is intended to have in each of the three
-systems. All users and records are fictional.
+Defines the access each hospital role has in each of the three systems. All users and records are fictional.
 
 ## How access is granted
 
@@ -19,7 +18,7 @@ maps them to its own page-level permissions.
 | Compliance | `compliance-auditor` |
 | IT | `it-admin` |
 
-## Intended access by role
+## Access by role
 
 | Role | EHR | Internal wiki | Scheduling / reporting dashboard |
 |---|---|---|---|
@@ -29,6 +28,33 @@ maps them to its own page-level permissions.
 | `report-analyst` | None (de-identified extracts only) | Read | Read all reports; no schedule writes |
 | `compliance-auditor` | Read-only audit views | Read | Read reports and audit summaries |
 | `it-admin` | None to clinical data; platform administration | Admin | Admin |
+
+## Enforcement in the sample applications
+
+Each application enforces access on the server from the `roles` claim in the
+validated ID token. Roles map to pages as follows; any other role receives
+HTTP 403. Access was verified by signing in as each user and comparing the
+allowed and denied pages with this matrix.
+
+| System | Page | Roles allowed |
+|---|---|---|
+| EHR | Patient demographics | `nurse`, `physician`, `scheduler` |
+| EHR | Chart notes and vitals | `nurse`, `physician` |
+| EHR | Sign orders | `physician` |
+| EHR | Audit views (read-only) | `compliance-auditor` |
+| EHR | Platform administration | `it-admin` |
+| Wiki | Read pages | all six roles |
+| Wiki | Edit nursing pages | `nurse` |
+| Wiki | Edit clinical pages | `physician` |
+| Wiki | Wiki administration | `it-admin` |
+| Dashboard | View schedule | `nurse`, `physician`, `scheduler`, `it-admin` |
+| Dashboard | Edit schedule | `scheduler`, `it-admin` |
+| Dashboard | Reports | `physician`, `report-analyst`, `compliance-auditor`, `it-admin` |
+| Dashboard | Dashboard administration | `it-admin` |
+
+Enforcement is at page level. Narrower limits named in the matrix, such as
+"own unit" and "own patients", are not modeled in the proof-of-concept
+applications.
 
 ## Rationale
 

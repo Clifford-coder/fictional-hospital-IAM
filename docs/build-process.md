@@ -207,7 +207,8 @@ python3 keycloak/scripts/seed_users.py keycloak/realm/hospital-realm.json
 
 The script replaces the realm's `users` list each run (so it is safe to repeat),
 stops with an error if an expected group is missing from the export, and assigns
-every user the realm's default role (see "Issue encountered" below).
+every user the realm's default role (see "Issue encountered" below). The script
+was later extended to write the group role mappings as well (see Phase 4).
 
 **4. Import the realm on startup.** The Dockerfile copies the realm file into
 Keycloak's import directory and starts the server with `--import-realm`:
@@ -285,7 +286,7 @@ All settings are in the `hospital` realm.
 | Minimum length | 14 |
 | Not username | On |
 | Not email | On |
-| Not Recently Used | 3 |
+| Password history | 5 |
 
 Length is the strongest lever, so it is set high. Forced periodic expiry and
 character-composition rules are deliberately omitted, following NIST SP 800-63B,
@@ -344,6 +345,10 @@ subflow, after `Username Password Form`) is changed from Conditional to
   enroll again at the next login. This is also the recovery path for a lost or
   replaced phone.
 
+The `forms` subflow itself must remain **Alternative**, not Required, or the
+`Cookie` step above it is skipped and single sign-on stops working (see
+Phase 4, "Issues encountered").
+
 The WebAuthn step in the subflow remains Disabled. Admin-console labels for
 flows differ slightly between Keycloak releases, so the structure above is the
 reliable description.
@@ -398,3 +403,178 @@ built from the committed realm file.
 - Dev mode discards data when the container stops, including TOTP enrollments.
   Each fresh container requires users to enroll again.
 - Enrollment testing used a personal authenticator app with fictional users.
+
+---
+
+## Phase 4: Sample applications with OpenID Connect single sign-on
+
+### Goal
+
+Connect proof-of-concept applications to Keycloak through OpenID Connect, enforce
+the role matrix inside them, and show that one sign-in reaches every application.
+
+### Design
+
+**One program, three clients.** A single small Flask program (`app/app.py`) plays
+the three hospital systems under separate path prefixes. Each is registered in
+Keycloak as its own OpenID Connect client, so signing in to one and opening
+another exercises single sign-on exactly as three separate systems would.
+
+| System | Client ID | Path | Redirect URI |
+|---|---|---|---|
+| EHR (demo) | `ehr-demo` | `/ehr/` | `http://localhost:5050/ehr/callback` |
+| Internal wiki (demo) | `wiki-demo` | `/wiki/` | `http://localhost:5050/wiki/callback` |
+| Scheduling and reporting dashboard (demo) | `dashboard-demo` | `/dashboard/` | `http://localhost:5050/dashboard/callback` |
+
+The program listens on port 5050 because macOS uses port 5000 for AirPlay
+Receiver. It runs directly on the host, not in a container: inside a container
+`localhost` refers to the container itself, so the browser-facing and
+server-facing Keycloak addresses would not match.
+
+**Client configuration.** `keycloak/scripts/seed_clients.py` writes the clients
+into the realm file. Every client is configured identically:
+
+| Setting | Value | Reason |
+|---|---|---|
+| Client authentication | On (confidential) | The program is a server-side application that can keep a secret |
+| Standard flow (authorization code) | On | The login flow in use |
+| Proof Key for Code Exchange | Required, S256 | Binds the authorization code to the request that asked for it |
+| Direct access grants | Off | Applications must never handle user passwords |
+| Implicit flow | Off | Superseded by the code flow |
+| Redirect URIs | Exact match, one per client | Prevents redirection to other addresses |
+| Post-logout redirect URI | The application's base URL | Allows the end-session redirect |
+| Role mapper `hospital-roles` | Realm roles into a flat `roles` claim | Lets the application read roles from the ID token |
+
+**Secrets are not stored in the repository.** The realm file contains
+placeholders such as `${EHR_CLIENT_SECRET}`. Keycloak resolves each placeholder
+from an environment variable when it imports the realm at startup. The values
+live in the local, git-ignored `.env` file, which supplies Keycloak (through
+`docker run --env-file`) and the application. `.env.example` lists the variable
+names with placeholder values: `EHR_CLIENT_SECRET`, `WIKI_CLIENT_SECRET`,
+`DASHBOARD_CLIENT_SECRET`, and `APP_SECRET_KEY`.
+
+**Application behavior.**
+
+- *Authorization is enforced on the server*, from the `roles` claim of the
+  validated ID token, never from anything the browser sends. Each page lists the
+  roles allowed to open it; others receive HTTP 403. The pages and their roles
+  are listed in `role-matrix.md`.
+- *Each application keeps its own login session.* Signing in at one application
+  does not sign the browser in at another locally. Single sign-on happens at
+  Keycloak, which recognizes its own session and returns the browser to the
+  second application without asking for credentials.
+- *Sessions are held server-side.* The browser cookie holds only a session
+  identifier, because three ID tokens would exceed the 4 KB cookie limit. The
+  store is in memory, so restarting the program signs everyone out.
+- *An application session ends when the ID token expires* (five minutes, the
+  realm's token lifespan). Re-authentication is then silent while the Keycloak
+  session is valid and refused once it is not. A disabled user or ended Keycloak
+  session therefore stops working in each application within about five minutes,
+  without any back-channel notification.
+- *Sign-out uses OpenID Connect RP-initiated logout.* It ends the Keycloak
+  session, so other applications ask for a sign-in once their own sessions
+  expire.
+
+All page content is hard-coded and fictional.
+
+### Process
+
+1. **Create the secrets.** Set the four variables listed above in `.env`, each
+   generated with `openssl rand -hex 24`. No quotation marks around the values.
+2. **Write the clients into the realm file:**
+
+   ```bash
+   python3 keycloak/scripts/seed_clients.py keycloak/realm/hospital-realm.json
+   ```
+
+   The script replaces any existing copies of the three clients, so it is safe to
+   repeat.
+3. **Rebuild and run Keycloak:**
+
+   ```bash
+   docker build -t hospital-iam-keycloak:0.4.1 ./keycloak
+
+   docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
+     --env-file .env hospital-iam-keycloak:0.4.1
+   ```
+
+4. **Run the applications** in a second terminal, from the repository root:
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r app/requirements.txt
+   python app/app.py
+   ```
+
+   The dependencies are pinned in `app/requirements.txt` to versions that install
+   on Python 3.9 and later (Flask 3.1.3, Authlib 1.6.12).
+
+5. Browse to `http://localhost:5050`. Use `localhost`, not `127.0.0.1`, because
+   the application's session cookie is bound to the host name used to start the
+   sign-in.
+
+**After any re-export of the realm**, run both seed scripts, in this order,
+before rebuilding, because the export omits users and the client definitions are
+generated:
+
+```bash
+python3 keycloak/scripts/seed_users.py keycloak/realm/hospital-realm.json
+python3 keycloak/scripts/seed_clients.py keycloak/realm/hospital-realm.json
+```
+
+### Issues encountered
+
+**Dependency versions and Python 3.9.** The first set of pinned versions
+included Authlib 1.8.0, which does not install on Python 3.9, the interpreter
+on the development machine. The pins were changed to the newest versions that
+resolve on Python 3.9 and the application was re-tested against them.
+
+**Every application asked for a sign-in; no single sign-on.** Keycloak held a
+valid session (the identity cookies existed and the account console listed the
+EHR as in use), but the wiki, the dashboard, the account console, and the EHR's
+own renewal all showed the login form.
+
+- *Cause:* in the `browser-mandatory-otp` flow, the top-level `forms` subflow had
+  been set to Required. A Required step at that level causes the Alternative
+  steps beside it, including `Cookie`, to be skipped, so existing sessions were
+  never honored.
+- *Fix:* `forms` set to **Alternative**, with its contents unchanged
+  (`Username Password Form` Required, `Conditional 2FA` Required, `OTP Form`
+  Required). The change is persisted in the realm file.
+- *Check:* mandatory TOTP was re-tested afterwards. A user who has never
+  enrolled is still forced to enroll, because the OTP step still runs whenever a
+  password sign-in actually takes place; the `Cookie` step only lets an existing
+  session skip it.
+
+**Roles missing from tokens.** After signing in, the applications showed no job
+role. Inspection of `hospital-realm.json` showed every group with an empty role
+list, although users and their group memberships were intact, so no role was
+inherited from any group.
+
+- *Cause:* the group-to-role mappings were absent from the realm file. Why they
+  were lost between the earlier verification and this point was not determined.
+- *Fix:* the group-to-role mapping is now defined in `seed_users.py`, which
+  writes it into the realm file on every run and stops with an error if a
+  required group or role is missing from the export. Access control no longer
+  depends on what a console export happens to contain.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| The three clients are created from the realm file, with secrets supplied from the environment | Confirmed |
+| One sign-in (password and authenticator code) reaches all three applications without a further prompt | Confirmed |
+| Mandatory TOTP still enforced after the flow correction | Confirmed |
+| Roles arrive in the token through group membership alone, with no role assigned directly to a user, on a fresh container | Confirmed |
+| For each hospital role, the pages shown as allowed or denied match `role-matrix.md` | Confirmed |
+| `no.group` is denied every page | Confirmed |
+| `former.employee` (disabled) cannot sign in | Confirmed |
+
+### Limitations
+
+- Keycloak runs in development mode over plain HTTP, and the applications run
+  on the host rather than in containers.
+- Application sessions are in memory and are lost when the program restarts.
+- Authorization is page-level. Row-level limits named in the matrix, such as
+  "own unit" or "own patients", are not modeled.
