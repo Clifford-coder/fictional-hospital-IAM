@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Add fictional seed users to a Keycloak realm export, in place.
+"""Add the group-to-role mappings and fictional seed users to a realm export, in place.
 
-Keycloak's partial export leaves users out, so this script writes the project's
-fictional users into the exported realm file. It is safe to re-run: the "users"
-list is replaced each time.
+Keycloak's partial export leaves users out, and a re-export cannot be relied on to
+carry the group role mappings, so this script writes both into the realm file:
+
+  * each department group gets its realm role (the access-control design), and
+  * the project's fictional users are added.
+
+It is safe to re-run: the mappings and the "users" list are replaced each time.
 
 Usage:
     python3 keycloak/scripts/seed_users.py keycloak/realm/hospital-realm.json
@@ -34,6 +38,17 @@ USERS = [
 ]
 
 
+# Access is granted through groups: each department group carries one realm role.
+GROUP_ROLES = {
+    "Nursing": "nurse",
+    "Medicine": "physician",
+    "Front Desk": "scheduler",
+    "Analytics": "report-analyst",
+    "Compliance": "compliance-auditor",
+    "IT": "it-admin",
+}
+
+
 def build_user(default_role, username, first, last, groups, enabled, temporary):
     user = {
         "username": username,
@@ -59,11 +74,19 @@ def main(path):
     with open(path, encoding="utf-8") as f:
         realm = json.load(f)
 
-    existing = {g.get("name") for g in realm.get("groups", [])}
-    needed = {g.lstrip("/") for u in USERS for g in u[3]}
-    missing = sorted(needed - existing)
+    groups = {g.get("name"): g for g in realm.get("groups", [])}
+    needed = set(GROUP_ROLES) | {g.lstrip("/") for u in USERS for g in u[3]}
+    missing = sorted(needed - set(groups))
     if missing:
         sys.exit(f"Error: groups missing from the realm export: {', '.join(missing)}")
+
+    roles = {r.get("name") for r in realm.get("roles", {}).get("realm", [])}
+    missing = sorted(set(GROUP_ROLES.values()) - roles)
+    if missing:
+        sys.exit(f"Error: realm roles missing from the realm export: {', '.join(missing)}")
+
+    for group_name, role in GROUP_ROLES.items():
+        groups[group_name]["realmRoles"] = [role]
 
     default_role = f"default-roles-{realm['realm']}"
     realm["users"] = [build_user(default_role, *u) for u in USERS]
@@ -71,7 +94,7 @@ def main(path):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(realm, f, indent=2)
         f.write("\n")
-    print(f"Wrote {len(USERS)} users into {path}")
+    print(f"Wrote {len(GROUP_ROLES)} group role mappings and {len(USERS)} users into {path}")
 
 
 if __name__ == "__main__":

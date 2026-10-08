@@ -506,7 +506,9 @@
       "path": "/Analytics",
       "subGroups": [],
       "attributes": {},
-      "realmRoles": [],
+      "realmRoles": [
+        "report-analyst"
+      ],
       "clientRoles": {}
     },
     {
@@ -516,7 +518,9 @@
       "path": "/Compliance",
       "subGroups": [],
       "attributes": {},
-      "realmRoles": [],
+      "realmRoles": [
+        "compliance-auditor"
+      ],
       "clientRoles": {}
     },
     {
@@ -526,7 +530,9 @@
       "path": "/Front Desk",
       "subGroups": [],
       "attributes": {},
-      "realmRoles": [],
+      "realmRoles": [
+        "scheduler"
+      ],
       "clientRoles": {}
     },
     {
@@ -536,7 +542,9 @@
       "path": "/IT",
       "subGroups": [],
       "attributes": {},
-      "realmRoles": [],
+      "realmRoles": [
+        "it-admin"
+      ],
       "clientRoles": {}
     },
     {
@@ -546,7 +554,9 @@
       "path": "/Medicine",
       "subGroups": [],
       "attributes": {},
-      "realmRoles": [],
+      "realmRoles": [
+        "physician"
+      ],
       "clientRoles": {}
     },
     {
@@ -556,7 +566,9 @@
       "path": "/Nursing",
       "subGroups": [],
       "attributes": {},
-      "realmRoles": [],
+      "realmRoles": [
+        "nurse"
+      ],
       "clientRoles": {}
     }
   ],
@@ -941,6 +953,168 @@
         "offline_access",
         "organization",
         "microprofile-jwt"
+      ]
+    },
+    {
+      "clientId": "ehr-demo",
+      "name": "EHR (demo)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${EHR_CLIENT_SECRET}",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "rootUrl": "http://localhost:5050",
+      "baseUrl": "/ehr/",
+      "redirectUris": [
+        "http://localhost:5050/ehr/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5050/"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "web-origins"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ],
+      "protocolMappers": [
+        {
+          "name": "hospital-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "wiki-demo",
+      "name": "Internal wiki (demo)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${WIKI_CLIENT_SECRET}",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "rootUrl": "http://localhost:5050",
+      "baseUrl": "/wiki/",
+      "redirectUris": [
+        "http://localhost:5050/wiki/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5050/"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "web-origins"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ],
+      "protocolMappers": [
+        {
+          "name": "hospital-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "dashboard-demo",
+      "name": "Scheduling/reporting dashboard (demo)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${DASHBOARD_CLIENT_SECRET}",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "rootUrl": "http://localhost:5050",
+      "baseUrl": "/dashboard/",
+      "redirectUris": [
+        "http://localhost:5050/dashboard/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5050/"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "web-origins"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ],
+      "protocolMappers": [
+        {
+          "name": "hospital-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
       ]
     }
   ],
@@ -2284,7 +2458,7 @@
         },
         {
           "authenticatorFlow": true,
-          "requirement": "REQUIRED",
+          "requirement": "ALTERNATIVE",
           "priority": 30,
           "autheticatorFlow": true,
           "flowAlias": "browser-mandatory-otp forms",
