@@ -56,8 +56,8 @@ Connect login, role enforcement, and single sign-on, not to be real clinical
 software.
 
 **5. Repository layout.**
-Chosen so later phases (realm configuration, sample apps, multi-container
-deployment, runbooks) fit without rearranging.
+Chosen to keep the image definition, the sample applications, and the
+documentation in separate, clearly named places.
 
 ```
 hospital-iam/
@@ -578,3 +578,134 @@ inherited from any group.
 - Application sessions are in memory and are lost when the program restarts.
 - Authorization is page-level. Row-level limits named in the matrix, such as
   "own unit" or "own patients", are not modeled.
+
+---
+
+## Phase 5: Audit logging
+
+### Goal
+
+Record who did what and when, for both ordinary users and administrators, in a
+form that can be read in the server log and stored by Keycloak.
+
+### Configuration
+
+| Setting | Value | Reason |
+|---|---|---|
+| Event listener | `jboss-logging` (enabled by default for the realm) | Writes every event to the server log under the `org.keycloak.events` category, which is what log collection would read |
+| Success-event log level | `info` | The listener logs successful events at `debug` by default, which the server's default level hides, so successful sign-ins would be missing from the log |
+| User events | Saved, with a short development retention | Keeps sign-ins, failures, and credential changes where an administrator can search them |
+| Admin events | Saved, with representation included | Records administrator actions together with the changed object |
+
+Including the representation stores the content of changed objects, which can be
+sensitive. That is acceptable here because every record is fictional, and it
+would be weighed again for real data.
+
+The log level is set in the Dockerfile. This is the final version:
+
+```dockerfile
+FROM quay.io/keycloak/keycloak:26.7.4
+
+ENV KC_HEALTH_ENABLED=true
+
+# Realm definition (roles, groups, seeded users, clients), placed where Keycloak looks for imports
+COPY realm/hospital-realm.json /opt/keycloak/data/import/hospital-realm.json
+
+# Dev mode with two additions:
+#   --import-realm: import the realm on first start (skipped if it already exists)
+#   --spi-events-listener--jboss-logging--success-level=info: also log successful
+#     events (logins, logouts), which are hidden at the default debug level
+CMD ["start-dev", "--import-realm", "--spi-events-listener--jboss-logging--success-level=info"]
+```
+
+### Process
+
+1. In the `hospital` realm, under Realm settings > Events, confirm the
+   `jboss-logging` listener, then turn on saving for user events and for admin
+   events (with representation).
+2. Export the realm over `keycloak/realm/hospital-realm.json` and re-run both seed
+   scripts, because the export omits users and the client definitions are
+   generated:
+
+   ```bash
+   python3 keycloak/scripts/seed_users.py keycloak/realm/hospital-realm.json
+   python3 keycloak/scripts/seed_clients.py keycloak/realm/hospital-realm.json
+   ```
+
+3. Rebuild and run:
+
+   ```bash
+   docker build -t hospital-iam-keycloak:0.5.0 ./keycloak
+
+   docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
+     --env-file .env hospital-iam-keycloak:0.5.0
+   ```
+
+4. Read the events from the container log:
+
+   ```bash
+   docker logs iam 2>&1 | grep "org.keycloak.events"
+   ```
+
+### What is recorded
+
+Each action below was performed and found in the log.
+
+| Action | Log entry | Fields that identify it |
+|---|---|---|
+| Successful sign-in | `LOGIN`, followed by `CODE_TO_TOKEN` | `username`, `clientId`, `sessionId`, `ipAddress`, `redirect_uri` |
+| First authenticator enrollment | `UPDATE_TOTP` and `UPDATE_CREDENTIAL`, then `LOGIN` | `credential_type="otp"`, `custom_required_action="CONFIGURE_TOTP"` |
+| Wrong password | `LOGIN_ERROR` | `error="invalid_user_credentials"`, `username` |
+| Wrong authenticator code | `LOGIN_ERROR` | `error="invalid_user_credentials"` plus `selected_credential_id` |
+| Sign-in to a disabled account | `LOGIN_ERROR` | `error="user_disabled"`, `username` |
+| Sign-out | `LOGOUT` | `clientId`, `sessionId` |
+| Administrator changes a user's group membership | Admin event, `operationType` `CREATE` or `DELETE` | `resourceType="GROUP_MEMBERSHIP"`, `resourcePath`, `username` |
+| Administrator disables or enables a user | Admin event, `operationType="UPDATE"` | `resourceType="USER"`, `resourcePath` |
+| Session expiry | `USER_SESSION_DELETED` | `reason="user_session_expired"` |
+
+Two entries, trimmed to the fields discussed (identifiers shown as placeholders):
+
+```
+WARN  [org.keycloak.events] type="LOGIN_ERROR", realmName="hospital", clientId="wiki-demo", ipAddress="192.168.65.1", error="user_disabled", username="former.employee"
+
+INFO  [org.keycloak.events] operationType="DELETE", realmName="master", resourceType="GROUP_MEMBERSHIP", resourcePath="users/<user-id>/groups/<group-id>", username="nina.nurse"
+```
+
+### Observations
+
+- **Password and code failures share an error name.** Both are logged as
+  `invalid_user_credentials`. A wrong authenticator code additionally carries a
+  `selected_credential_id`, which distinguishes it from a wrong password.
+- **Administrator actions show the administrator's realm.** Admin entries report
+  `realmName="master"`, because administrators sign in there, and identify the
+  affected hospital object by `resourcePath`.
+- **The log records that something changed, not what.** The disable and enable
+  entries show an `UPDATE` on a user without naming the attribute. The detail is
+  held in the stored admin event, which includes the representation.
+- **Signing out of one application ends the Keycloak session.** A later sign-out
+  from another application in the same browser session was logged as
+  `LOGOUT_ERROR` with `error="session_expired"`, consistent with the sign-out
+  behavior described in Phase 4.
+- **The log covers every realm.** Sign-ins to the admin console (`master`),
+  token refreshes, and token exchanges appear alongside hospital events.
+- **Source addresses are the Docker network gateway** (`192.168.65.1`), not the
+  address of an individual client. Recording real client addresses behind a
+  reverse proxy depends on forwarded headers.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| A successful sign-in is logged at `info` level | Confirmed |
+| A wrong password is logged as `LOGIN_ERROR` | Confirmed |
+| A wrong authenticator code is logged as `LOGIN_ERROR` | Confirmed |
+| An administrator's group-membership changes (add and remove) are logged as admin events | Confirmed |
+| An administrator disabling and re-enabling a user is logged, and a sign-in to the disabled account is logged as `user_disabled` | Confirmed |
+
+### Limitations
+
+- In development mode, saved events are discarded when the container stops, and
+  the log lasts only as long as the container.
+- The log is verbose: token exchanges and token refreshes are recorded for every
+  application and for the admin console.
+- Admin entries in the log do not carry the detail of what was changed.

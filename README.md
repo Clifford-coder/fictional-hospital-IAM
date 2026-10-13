@@ -10,16 +10,24 @@ roles.
 
 ## Project scope
 
+**Included in this repository**
+
 - Custom Keycloak image built from the official base image
-- Custom realm with hospital roles (Nurse, Physician, and others)
-- TOTP-based MFA
-- OpenID Connect (OIDC) single sign-on (SSO) demonstrated with sample apps
+- Custom realm with hospital roles (Nurse, Physician, and others), assigned
+  through groups
+- Password policy, brute-force protection, and mandatory TOTP-based MFA
+- OpenID Connect (OIDC) single sign-on (SSO) across three sample applications,
+  with role-based access enforced in each
+- Audit logging of user and administrator events
+- Documentation: image build process and the role/permission matrix
+
+**Remaining scope**
+
 - Final deployment as separate containers: Keycloak, PostgreSQL, sample app,
   and an nginx reverse proxy handling TLS
-- Documentation: image build process, role/permission matrix, onboarding and
-  offboarding runbooks, backup/restore, Keycloak upgrade procedure, and a
-  mapping of design decisions (MFA, audit logging, RBAC) to HIPAA-style
-  access-control and audit requirements
+- Documentation: onboarding and offboarding runbooks, backup/restore, Keycloak
+  upgrade procedure, and a mapping of design decisions (MFA, audit logging,
+  RBAC) to HIPAA-style access-control and audit requirements
 
 ## About the sample applications
 
@@ -31,8 +39,7 @@ Keycloak's login, role enforcement, and single sign-on work end to end.
   `/dashboard`, and each is registered as its own OpenID Connect client.
 - They are deliberately thin: a handful of role-gated pages each.
 - Any "records" they display are hard-coded, obviously fictional placeholders.
-- They have no database of their own. PostgreSQL in this project stores
-  Keycloak's identity data only.
+- They have no database of their own.
 - They are **not** an EHR, a wiki, or a scheduling system, and nothing here is
   suitable for handling real clinical workflows.
 
@@ -78,9 +85,9 @@ cp .env.example .env
 **2. Start Keycloak.**
 
 ```bash
-docker build -t hospital-iam-keycloak:0.4.1 ./keycloak
+docker build -t hospital-iam-keycloak:0.5.0 ./keycloak
 docker run --rm --name iam -p 8080:8080 -p 9000:9000 \
-  --env-file .env hospital-iam-keycloak:0.4.1
+  --env-file .env hospital-iam-keycloak:0.5.0
 ```
 
 **3. Start the sample applications** in a second terminal.
@@ -96,6 +103,7 @@ python app/app.py
 - Admin console: http://localhost:8080 (credentials from `.env`)
 - Hospital user sign-in: http://localhost:8080/realms/hospital/account
 - Health check: http://localhost:9000/health/ready
+- Audit events: `docker logs iam 2>&1 | grep "org.keycloak.events"`
 
 The `hospital` realm, its fictional users, and the three application clients are
 imported automatically on startup. Hospital users must enroll an authenticator
@@ -133,6 +141,7 @@ sample applications enforce it, is in `docs/role-matrix.md`.
 | Single sign-on | OpenID Connect authorization code flow with PKCE; one confidential client per application |
 | Authorization | Roles granted through groups only; enforced server-side by each application |
 | Client secrets | Supplied from the environment at startup; never stored in the repository |
+| Audit logging | User and admin events saved and written to the server log, including successful sign-ins |
 
 Details and reasoning are in `docs/build-process.md`.
 
