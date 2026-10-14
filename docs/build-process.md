@@ -42,7 +42,7 @@ Hub is legacy and is not used.
 
 **2. Secrets stay out of Git and out of image layers.**
 Real values live in a local `.env` file that is git-ignored. The repository
-holds only `.env.example` with placeholders, and admin credentials are supplied
+holds only `.env.example`, which lists the variable names without values, and admin credentials are supplied
 at container run time rather than baked into an image.
 
 **3. Fictional data only.**
@@ -63,8 +63,8 @@ documentation in separate, clearly named places.
 hospital-iam/
   keycloak/        Dockerfile, realm/hospital-realm.json, scripts/seed_users.py
   app/             proof-of-concept sample application(s)
-  docs/            build-process.md, role-matrix.md
-  .env.example     placeholder values only; real .env is git-ignored
+  docs/            build-process.md, role-matrix.md, testing-guide.md
+  .env.example     variable names only, no values; real .env is git-ignored
   README.md
 ```
 
@@ -103,7 +103,7 @@ Admin credentials are not stored in the image. They are supplied at run time
 from a local, git-ignored `.env` file (created from `.env.example`):
 
 ```bash
-cp .env.example .env        # then set a local admin password in .env
+cp .env.example .env        # then give every variable in .env a value
 
 docker build -t hospital-iam-keycloak:0.1.0 ./keycloak
 
@@ -450,7 +450,7 @@ placeholders such as `${EHR_CLIENT_SECRET}`. Keycloak resolves each placeholder
 from an environment variable when it imports the realm at startup. The values
 live in the local, git-ignored `.env` file, which supplies Keycloak (through
 `docker run --env-file`) and the application. `.env.example` lists the variable
-names with placeholder values: `EHR_CLIENT_SECRET`, `WIKI_CLIENT_SECRET`,
+names without values: `EHR_CLIENT_SECRET`, `WIKI_CLIENT_SECRET`,
 `DASHBOARD_CLIENT_SECRET`, and `APP_SECRET_KEY`.
 
 **Application behavior.**

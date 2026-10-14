@@ -66,8 +66,8 @@ hospital-iam/
   keycloak/        Dockerfile, realm/hospital-realm.json,
                    scripts/seed_users.py, scripts/seed_clients.py
   app/             app.py, requirements.txt (proof-of-concept sample apps)
-  docs/            build-process.md, role-matrix.md
-  .env.example     placeholder values only; real .env is git-ignored
+  docs/            build-process.md, role-matrix.md, testing-guide.md
+  .env.example     variable names only, no values; real .env is git-ignored
   README.md
 ```
 
@@ -75,8 +75,10 @@ hospital-iam/
 
 Prerequisites: Docker, and Python 3.9 or newer.
 
-**1. Configure.** Copy the example file and replace every `change-me` value in
-`.env`. Generate each secret with `openssl rand -hex 24`.
+**1. Configure.** Copy the example file, then give every variable in `.env` a
+value: choose an admin password, and generate each secret with
+`openssl rand -hex 24`. Use no quotation marks around the values. The sample
+applications refuse to start while any of their secrets is empty.
 
 ```bash
 cp .env.example .env
@@ -111,6 +113,12 @@ app (TOTP) at first sign-in. This runs Keycloak in development mode for local
 use only, and data, including authenticator enrollments, is discarded when the
 container stops. See `docs/build-process.md` for how the image is built.
 
+## Testing
+
+`docs/testing-guide.md` is a step-by-step walkthrough for trying out the system:
+the accounts to use, what to look at in the admin console, and ten short tests
+with expected results.
+
 ## Hospital realm
 
 Access is granted through groups, and each group carries one realm role.
@@ -126,9 +134,10 @@ Access is granted through groups, and each group carries one realm role.
 
 `keycloak/scripts/seed_users.py` writes the group-to-role mappings and nine
 fictional users into the realm file, including one with no group and one
-disabled account for testing. Their shared demo password is defined in that
-script and is for local development only. The access each role has, and how the
-sample applications enforce it, is in `docs/role-matrix.md`.
+disabled account for testing. Their shared demo password is fictional and for
+local development only; it is defined in that script and listed in
+`docs/testing-guide.md`. The access each role has, and how the sample
+applications enforce it, is in `docs/role-matrix.md`.
 
 ## Security configuration
 
@@ -147,5 +156,4 @@ Details and reasoning are in `docs/build-process.md`.
 
 ## Secrets
 
-Real credentials live only in a local `.env` file, which is git-ignored. Never
-commit secrets, private keys, or real client secrets.
+Real credentials live only in a local `.env` file, which is git-ignored.
