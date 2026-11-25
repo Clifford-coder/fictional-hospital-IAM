@@ -7,6 +7,11 @@ the state of the project at the end of that phase.
 > **Data policy:** everything in this project is fictional. No real person or
 > patient data is used anywhere.
 
+> **Structure:** Phases 0 to 5 describe Part 1, a single Keycloak container (Git
+> tag `part1-complete`). Part 2, the Kubernetes deployment, starts at the heading
+> "Part 2: Kubernetes deployment" near the end of this file, and its phases are
+> labelled "Part 2, Phase N".
+
 ---
 
 ## Phase 0: Workspace and guardrails
@@ -709,3 +714,225 @@ INFO  [org.keycloak.events] operationType="DELETE", realmName="master", resource
 - The log is verbose: token exchanges and token refreshes are recorded for every
   application and for the admin console.
 - Admin entries in the log do not carry the detail of what was changed.
+
+---
+
+# Part 2: Kubernetes deployment
+
+Part 1 (Phases 0 to 5 above) is a single Keycloak container in development
+mode, tagged `part1-complete` in Git. Part 2 moves the system onto a local
+Kubernetes cluster as separate workloads: Keycloak, PostgreSQL, the sample
+applications, and an nginx reverse proxy that terminates TLS. Part 2 phases are
+numbered from 0 again and are written "Part 2, Phase N" to keep them apart from
+the Part 1 phases above.
+
+---
+
+## Part 2, Phase 0: Preparation and guardrails
+
+### Goal
+
+Freeze Part 1, pin every version Part 2 depends on, remove a known mismatch
+between the realm file and these documents, and check the workstation, all
+before any Kubernetes manifest is written. No cluster is created in this phase.
+
+### Environment
+
+| Item | Value |
+|---|---|
+| Date | 2026-11-25 |
+| Host | macOS on Apple silicon (arm64) |
+| Docker | 29.7.2, with 7.7 GB RAM and 11 CPUs available to it |
+| kubectl (client) | 1.36 |
+| kind | v0.33.0 |
+| Python (system) | 3.9.6 |
+| Git branch | `part2` |
+
+### Decisions
+
+**1. Freeze Part 1, then work on a branch.**
+The last Part 1 commit carries the annotated tag `part1-complete`, and all
+Part 2 work happens on the branch `part2`.
+
+- *Why:* Part 1 stays a working, complete single-container system that can be
+  checked out at any time, and any Part 2 change can be compared against it.
+
+**2. Every version is pinned in one file, `versions.env`.**
+The file is plain `KEY=VALUE`, one setting per line, with comments on their own
+lines. Scripts read it, and a script (`scripts/preflight.sh`) compares it with
+what is installed.
+
+| Component | Pin | Reason |
+|---|---|---|
+| Keycloak | 26.7.4 | Unchanged from Part 1, so that differences in Part 2 come from moving to Kubernetes and not from a Keycloak upgrade. The upgrade is exercised on purpose in a later phase. |
+| kind | v0.33.0 | Runs the local cluster inside Docker. |
+| Kubernetes node image | `kindest/node` v1.36.4 | Kubernetes 1.36, not the newest 1.37, because cert-manager 1.21 documents support for Kubernetes 1.33 to 1.36. |
+| Calico (network plugin) | v3.33.0 | Part 2 relies on default-deny NetworkPolicies, so enforcement has to be certain. Calico is installed explicitly in place of kind's built-in plugin, so enforcement does not depend on which version of the built-in plugin ships, and Calico's policy behavior is widely documented. |
+| cert-manager | v1.21.3 | Issues TLS certificates from a local certificate authority, so certificate handling matches a real deployment. |
+| PostgreSQL | 17.12 | Keycloak 26.7 supports PostgreSQL 14 to 18; 17 is a mature choice inside that range. |
+| nginx | 1.30.6 (`nginx-unprivileged`, Alpine) | Runs as a non-root user, which the Kubernetes "restricted" Pod Security Standard requires. The ingress-nginx project was retired in March 2026, so nginx is deployed as an ordinary Deployment with its own configuration and not as an ingress controller. |
+| Python (application image) | 3.13.18 (slim) | Base for the sample application container. |
+
+**3. Container images are pinned by digest, not only by tag.**
+Each image is written `name:tag@sha256:...`.
+
+- *Why:* a tag can be re-pushed to point at different contents, while a digest
+  identifies exactly one image. With both present, Docker resolves by digest and
+  the tag is there for the human reader.
+- *How recorded:* each image was pulled on 2026-11-25 and its digest read back
+  with `docker inspect` (the `RepoDigests` field). The versions inside the
+  images were confirmed by running them: PostgreSQL 17.12, nginx 1.30.6,
+  Python 3.13.18. The Keycloak digest is the one for the 26.7.4 tag.
+- *Consequence:* updating an image is now a deliberate edit to `versions.env`,
+  never something that happens because an upstream tag moved.
+
+**4. The realm file is aligned with the documented values.**
+The README, Part 1 Phase 3, and the testing guide state an SSO session idle
+timeout of 15 minutes, a maximum session of 12 hours, and a password history of
+5. The realm file actually held 30 minutes, 10 hours, and a history of 3.
+
+- *Decision:* change the realm file, not the documents. The documented values
+  are the stated policy, and a 15-minute idle timeout suits the shared clinical
+  workstations the policy is written for.
+- *How:* `scripts/reconcile_realm.py` makes exactly three edits
+  (`ssoSessionIdleTimeout` 1800 to 900, `ssoSessionMaxLifespan` 36000 to 43200,
+  `passwordHistory(3)` to `passwordHistory(5)`). It refuses to run if it does
+  not find the exact old values, so it cannot overwrite a value that was
+  changed on purpose, and running it again changes nothing. The rest of the file
+  is byte for byte unchanged.
+- *Guard:* `versions.env` records the three target values and `preflight.sh`
+  fails if the realm file disagrees.
+- *Note on Part 1:* the `part1-complete` tag still holds the old values, so Part
+  1 as tagged did not fully match its own documents. Part 2 corrects this.
+
+**5. Hostnames and ports.**
+Three names are mapped to `127.0.0.1` in `/etc/hosts`: `iam.hospital.test`
+(Keycloak, user-facing), `apps.hospital.test` (sample applications), and
+`iam-admin.hospital.test` (Keycloak admin console).
+
+- *Why `.test`:* the name is reserved for testing (RFC 6761) and never resolves
+  on the internet, so it cannot collide with a real domain.
+- *Why a separate admin hostname:* the admin console can later be given stricter
+  rules at the proxy than the hostname ordinary users reach.
+- *Ports:* the cluster is meant to publish HTTPS on host port 443 and HTTP on
+  80, so URLs need no port number. Preflight confirms nothing else is listening
+  on them. If 443 or 80 cannot be bound, the fallback is to set 8443 and 8080 in
+  `versions.env`.
+
+**6. Secrets: generated from a git-ignored `.env`, one Secret per consumer.**
+Kubernetes Secrets will be created from the local `.env` file, which is never
+committed. Each workload gets its own Secret, holding only what it needs.
+
+- Three variable names were added to `.env.example`: `DEMO_USER_PASSWORD`,
+  `POSTGRES_PASSWORD`, and `KEYCLOAK_DB_PASSWORD`. The Keycloak database
+  password is deliberately not called `KC_DB_PASSWORD`, so that Keycloak cannot
+  pick it up automatically as one of its own settings.
+- Passwords are limited to letters and digits and made long (see the second
+  issue below).
+- `.gitignore` gained `.DS_Store`, `.env.*` (with `.env.example` kept),
+  `*.dump`, `backups/`, `kubeconfig`, and `*.kubeconfig`, because database dumps
+  and cluster credentials files contain secrets and are easy to commit by
+  accident.
+
+**7. Two scripts check the work.**
+
+- `scripts/preflight.sh` is read-only and changes nothing. It checks the branch
+  and tag, a clean working tree, that `.env` is ignored, the realm values against
+  `versions.env`, the tool versions (Python, OpenSSL, Docker, kubectl, kind),
+  Docker's memory, that the three hostnames resolve to `127.0.0.1`, and that
+  ports 443 and 80 are free. It exits with an error if any check fails.
+- `scripts/verify_realm.sh` signs in as the admin of a running Keycloak and reads
+  the realm settings back from the server, so the claim about session and
+  password values is checked against the running system and not only the file.
+
+**8. Directory scaffold.**
+Empty folders for later phases were created with a `.gitkeep` file in each,
+because Git does not track empty folders.
+
+```
+hospital-iam/
+  versions.env     every pinned version and local setting
+  keycloak/        Dockerfile, realm/hospital-realm.json, scripts/, demo/ (later)
+  app/             proof-of-concept sample applications
+  k8s/             cluster/, base/, overlays/local/ (manifests, later phases)
+  nginx/           reverse proxy configuration (later)
+  scripts/         preflight.sh, verify_realm.sh, reconcile_realm.py
+  docs/            build-process.md, role-matrix.md, testing-guide.md, runbooks/
+  .env.example     variable names only, no values; real .env is git-ignored
+  README.md
+```
+
+### Issues encountered
+
+**Admin sign-in check failed with HTTP 400 and no readable error.** The first
+version of `verify_realm.sh` printed `curl: (22) ... 400` followed by a Python
+JSON error.
+
+- *Cause:* Keycloak's token endpoint answers HTTP 400, not 401, when the
+  username or password is wrong, when the account has an unfinished required
+  action, and when the account is disabled. The script used `curl -f`, which
+  discards the response body, so Keycloak's explanation never appeared and the
+  JSON parser received nothing.
+- *Fix:* the script now prints the HTTP status and Keycloak's own
+  `error_description`, with a hint for each of the three cases. It was tested
+  against a live Keycloak 26.7.4 with correct and wrong credentials.
+
+**Correct-looking admin password rejected.** The server log showed
+`LOGIN_ERROR ... error="invalid_user_credentials"` and included a `userId`, which
+meant the account was found and the password was wrong.
+
+- *Cause:* the password contained characters that bash treats as syntax (such as
+  `$`, `!`, `#`, `&`, `;`, quotes, or a backslash). The shell command
+  `. ./.env` interprets them, while `docker --env-file` reads the file literally,
+  so the container and the script were using two different strings.
+- *Fix:* the password was changed to letters and digits only. The same
+  difference applies to `kubectl create secret --from-env-file`, which is also
+  literal, so the rule is part of the Secrets decision above. Strength comes from
+  length, not symbols.
+
+**Trailing comments became part of the values.** In one copy of `versions.env`,
+comments written after a value on the same line ended up inside quotes
+(`KIND_VERSION="v0.33.0   # check ..."`), so the value was the whole string.
+That would have broken the kind version comparison, the realm arithmetic, and
+the port checks.
+
+- *Fix:* every comment now sits on its own line above the setting, and the file
+  header states that no setting may have a trailing comment.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `scripts/preflight.sh` | 0 failures. The only warning was uncommitted changes, reported before the Phase 0 work was committed |
+| Realm file values | Idle 15 minutes, maximum 12 hours, history 5, matching `versions.env` |
+| Realm values on a running Keycloak 26.7.4 (`verify_realm.sh`) | `ssoSessionIdleTimeout` 900, `ssoSessionMaxLifespan` 43200, password policy includes `passwordHistory(5)`, browser flow `browser-mandatory-otp` |
+| Image versions inside the pinned images | PostgreSQL 17.12, nginx 1.30.6, Python 3.13.18 |
+| `versions.env` | No placeholders left; every image has a digest |
+| Hostnames | All three resolve to `127.0.0.1` |
+| Ports 443 and 80 | Nothing listening on either |
+| Docker resources | 7.7 GB RAM against a 6 GB minimum |
+| kubectl and kind | kubectl 1.36 against node image 1.36; kind v0.33.0 as pinned |
+
+### State at the end of Part 2, Phase 0
+
+- Commits on `part2`: the realm alignment, then the pins, scripts, scaffold, and
+  ignore rules. This documentation update follows as its own commit.
+- No cluster exists, no manifest is written, and no application behavior has
+  changed. The only functional change is the three realm values above.
+- `docs/role-matrix.md` and `docs/testing-guide.md` needed no change: they
+  already described the corrected values.
+
+### Limitations
+
+- Whether Docker can bind host ports 443 and 80 is proven only when the cluster
+  is created. Preflight shows that nothing is using them, not that binding will
+  succeed. The 8443 and 8080 fallback is in place.
+- The nginx digest was recorded from the `stable-alpine` tag, and the
+  `1.30.6-alpine` label in `versions.env` is the version that image reports. The
+  digest is what is enforced.
+- Digests freeze what was tested on 2026-11-25. They are not updated
+  automatically, which is intended, but they also mean security patches to the
+  base images arrive only when someone updates them.
+- Kubernetes Secrets are base64-encoded, not encrypted. That is acceptable for a
+  local lab with fictional data. A real deployment would encrypt Secrets at rest
+  or use an external secrets manager.

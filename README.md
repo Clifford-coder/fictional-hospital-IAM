@@ -21,13 +21,26 @@ roles.
 - Audit logging of user and administrator events
 - Documentation: image build process and the role/permission matrix
 
-**Remaining scope**
+**Part 2: Kubernetes deployment (in progress, branch `part2`)**
 
-- Final deployment as separate containers: Keycloak, PostgreSQL, sample app,
-  and an nginx reverse proxy handling TLS
-- Documentation: onboarding and offboarding runbooks, backup/restore, Keycloak
-  upgrade procedure, and a mapping of design decisions (MFA, audit logging,
-  RBAC) to HIPAA-style access-control and audit requirements
+- Final deployment as separate workloads on a local Kubernetes (kind) cluster:
+  Keycloak, PostgreSQL, the sample applications, and an nginx reverse proxy
+  handling TLS
+- Documentation still to come: onboarding and offboarding runbooks,
+  backup/restore, Keycloak upgrade procedure, and a mapping of design decisions
+  (MFA, audit logging, RBAC) to HIPAA-style access-control and audit
+  requirements
+
+## Status
+
+| Part | State |
+|---|---|
+| Part 1: single Keycloak container, realm, MFA, SSO, audit events | Complete (Git tag `part1-complete`) |
+| Part 2, Phase 0: pinned versions, realm aligned with the documents, workstation checks | Complete |
+| Part 2, later phases: images, cluster, database, TLS proxy, runbooks | Not started |
+
+The Part 1 instructions below still work as written. Part 2 changes are
+recorded in `docs/build-process.md` under "Part 2: Kubernetes deployment".
 
 ## About the sample applications
 
@@ -59,14 +72,34 @@ patient data is ever used or stored here.
 
 Images are always referenced by exact tag, never `latest`.
 
+**Part 2 pins** are all in one file, `versions.env`, and every image there is
+also pinned by digest (`name:tag@sha256:...`) so a moved tag cannot change what
+runs.
+
+| Component | Version |
+|---|---|
+| Keycloak | 26.7.4 (unchanged from Part 1) |
+| kind / Kubernetes node image | v0.33.0 / `kindest/node` v1.36.4 |
+| Calico (NetworkPolicy enforcement) | v3.33.0 |
+| cert-manager | v1.21.3 |
+| PostgreSQL | 17.12 |
+| nginx (`nginx-unprivileged`, Alpine) | 1.30.6 |
+| Python (application image) | 3.13.18 (slim) |
+
 ## Repository layout
 
 ```
 hospital-iam/
+  versions.env     every Part 2 pinned version and local setting
   keycloak/        Dockerfile, realm/hospital-realm.json,
-                   scripts/seed_users.py, scripts/seed_clients.py
+                   scripts/seed_users.py, scripts/seed_clients.py,
+                   demo/ (empty until Part 2, Phase 1)
   app/             app.py, requirements.txt (proof-of-concept sample apps)
-  docs/            build-process.md, role-matrix.md, testing-guide.md
+  k8s/             cluster/, base/, overlays/local/ (empty until later phases)
+  nginx/           reverse proxy configuration (empty until later phases)
+  scripts/         preflight.sh, verify_realm.sh, reconcile_realm.py
+  docs/            build-process.md, role-matrix.md, testing-guide.md,
+                   runbooks/ (empty until later phases)
   .env.example     variable names only, no values; real .env is git-ignored
   README.md
 ```
@@ -113,6 +146,30 @@ app (TOTP) at first sign-in. This runs Keycloak in development mode for local
 use only, and data, including authenticator enrollments, is discarded when the
 container stops. See `docs/build-process.md` for how the image is built.
 
+## Part 2 workstation checks
+
+Part 2 adds two scripts. Both are run from the repository root.
+
+```bash
+bash scripts/preflight.sh
+```
+
+Read-only. Checks the Git branch and tag, that `.env` is git-ignored, the realm
+values against `versions.env`, the installed tools (Python, OpenSSL, Docker,
+kubectl, kind), Docker's memory, that `iam.hospital.test`, `apps.hospital.test`
+and `iam-admin.hospital.test` resolve to `127.0.0.1` (add them to `/etc/hosts`),
+and that host ports 443 and 80 are free. It exits with an error if a check
+fails.
+
+```bash
+set -a; . ./.env; set +a
+bash scripts/verify_realm.sh
+```
+
+With the Keycloak container from the quick start running, signs in as the admin
+and prints the realm's session and password settings as the server reports them.
+If the sign-in is refused, the script prints Keycloak's reason.
+
 ## Testing
 
 `docs/testing-guide.md` is a step-by-step walkthrough for trying out the system:
@@ -157,3 +214,10 @@ Details and reasoning are in `docs/build-process.md`.
 ## Secrets
 
 Real credentials live only in a local `.env` file, which is git-ignored.
+
+Keep every password in `.env` to letters and digits, and make it long (20
+characters or more). The shell command `. ./.env` and `docker --env-file` read
+special characters differently, so a password containing `$`, `!`, `#`, `&`,
+quotes, or similar can work in one place and be rejected in the other.
+`.env.example` also lists `DEMO_USER_PASSWORD`, `POSTGRES_PASSWORD` and
+`KEYCLOAK_DB_PASSWORD`, which Part 2 uses from Phase 1 onward.
