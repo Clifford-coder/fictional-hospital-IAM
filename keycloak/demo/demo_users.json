@@ -1,0 +1,96 @@
+{
+  "description": "Fictional demo users. No passwords are stored here: load_demo_users.py sets every password from DEMO_USER_PASSWORD at load time and marks it temporary.",
+  "users": [
+    {
+      "username": "nina.nurse",
+      "firstName": "Nina",
+      "lastName": "Demo",
+      "email": "nina.nurse@example.org",
+      "enabled": true,
+      "groups": [
+        "/Nursing"
+      ]
+    },
+    {
+      "username": "paul.physician",
+      "firstName": "Paul",
+      "lastName": "Demo",
+      "email": "paul.physician@example.org",
+      "enabled": true,
+      "groups": [
+        "/Medicine"
+      ]
+    },
+    {
+      "username": "sam.scheduler",
+      "firstName": "Sam",
+      "lastName": "Demo",
+      "email": "sam.scheduler@example.org",
+      "enabled": true,
+      "groups": [
+        "/Front Desk"
+      ]
+    },
+    {
+      "username": "rita.reports",
+      "firstName": "Rita",
+      "lastName": "Demo",
+      "email": "rita.reports@example.org",
+      "enabled": true,
+      "groups": [
+        "/Analytics"
+      ]
+    },
+    {
+      "username": "carl.compliance",
+      "firstName": "Carl",
+      "lastName": "Demo",
+      "email": "carl.compliance@example.org",
+      "enabled": true,
+      "groups": [
+        "/Compliance"
+      ]
+    },
+    {
+      "username": "ivy.it",
+      "firstName": "Ivy",
+      "lastName": "Demo",
+      "email": "ivy.it@example.org",
+      "enabled": true,
+      "groups": [
+        "/IT"
+      ]
+    },
+    {
+      "username": "new.hire",
+      "firstName": "Noor",
+      "lastName": "Demo",
+      "email": "new.hire@example.org",
+      "enabled": true,
+      "groups": [
+        "/Nursing"
+      ],
+      "note": "A new employee: the temporary password forces a password change and authenticator enrollment at first sign-in."
+    },
+    {
+      "username": "no.group",
+      "firstName": "Nolan",
+      "lastName": "Demo",
+      "email": "no.group@example.org",
+      "enabled": true,
+      "groups": [],
+      "note": "Authenticates but has no group and therefore no job role; every application should deny this user."
+    },
+    {
+      "username": "former.employee",
+      "firstName": "Fred",
+      "lastName": "Demo",
+      "email": "former.employee@example.org",
+      "enabled": false,
+      "groups": [
+        "/Nursing"
+      ],
+      "note": "Disabled account that still has a group; models an offboarded user. Sign-in must fail."
+    }
+  ]
+}

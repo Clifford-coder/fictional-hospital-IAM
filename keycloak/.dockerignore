@@ -1,0 +1,10 @@
+# The build context is ./keycloak. Only realm/ is copied into the image; everything
+# else stays out so nothing from it can reach a layer by accident.
+Dockerfile
+.dockerignore
+.env
+.env.*
+*.pem
+*.key
+scripts/
+demo/

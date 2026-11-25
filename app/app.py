@@ -19,11 +19,17 @@ from authlib.integrations.base_client import OAuthError
 from authlib.integrations.flask_client import OAuth
 from dotenv import find_dotenv, load_dotenv
 from flask import Flask, abort, redirect, render_template_string, request, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv(find_dotenv())
 
 ISSUER = os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8080/realms/hospital")
 BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:5050").rstrip("/")
+# Where to fetch the discovery document. Defaults to the public issuer address; in a cluster it
+# can be the in-cluster Keycloak address while ISSUER stays the public one.
+DISCOVERY_URL = os.environ.get("KEYCLOAK_DISCOVERY_URL", f"{ISSUER}/.well-known/openid-configuration")
+# Number of reverse proxies in front of this app whose X-Forwarded-* headers to trust (0 = none).
+PROXY_HOPS = int(os.environ.get("PROXY_HOPS", "0"))
 
 NURSE, PHYSICIAN, SCHEDULER = "nurse", "physician", "scheduler"
 ANALYST, AUDITOR, IT_ADMIN = "report-analyst", "compliance-auditor", "it-admin"
@@ -83,6 +89,8 @@ def require_env(name):
 
 app = Flask(__name__)
 app.secret_key = require_env("APP_SECRET_KEY")
+if PROXY_HOPS:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=PROXY_HOPS, x_proto=PROXY_HOPS, x_host=PROXY_HOPS)
 app.config.update(
     SESSION_COOKIE_NAME="hospital_demo_session",
     SESSION_COOKIE_HTTPONLY=True,
@@ -96,7 +104,7 @@ for _key, _cfg in APPS.items():
         name=_key,
         client_id=_cfg["client_id"],
         client_secret=require_env(_cfg["secret_env"]),
-        server_metadata_url=f"{ISSUER}/.well-known/openid-configuration",
+        server_metadata_url=DISCOVERY_URL,
         client_kwargs={"scope": "openid profile email", "code_challenge_method": "S256"},
     )
 

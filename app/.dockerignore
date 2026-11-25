@@ -1,0 +1,12 @@
+# The build context is ./app. Only requirements.txt and app.py are copied into the image.
+Dockerfile
+.dockerignore
+.env
+.env.*
+.venv
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pem
+*.key
