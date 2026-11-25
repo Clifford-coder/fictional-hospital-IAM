@@ -4,3 +4,12 @@
 __pycache__/
 .venv/
 .vscode
+# Part 2: never commit these
+.DS_Store
+.env.*
+!.env.example
+*.dump
+*.dump.*
+backups/
+kubeconfig
+*.kubeconfig
