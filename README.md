@@ -37,10 +37,13 @@ roles.
 |---|---|
 | Part 1: single Keycloak container, realm, MFA, SSO, audit events | Complete (Git tag `part1-complete`) |
 | Part 2, Phase 0: pinned versions, realm aligned with the documents, workstation checks | Complete |
-| Part 2, later phases: images, cluster, database, TLS proxy, runbooks | Not started |
+| Part 2, Phase 1: optimized Keycloak image, containerized sample app, demo users separated from the realm | Complete |
+| Part 2, later phases: cluster, database, TLS proxy, runbooks | Not started |
 
-The Part 1 instructions below still work as written. Part 2 changes are
-recorded in `docs/build-process.md` under "Part 2: Kubernetes deployment".
+The Part 1 quick start below builds Part 1 as tagged (`git checkout part1-complete`).
+The current images are run as described under "Running the Phase 1 images". Part 2
+changes are recorded in `docs/build-process.md` under "Part 2: Kubernetes
+deployment".
 
 ## About the sample applications
 
@@ -85,16 +88,22 @@ runs.
 | PostgreSQL | 17.12 |
 | nginx (`nginx-unprivileged`, Alpine) | 1.30.6 |
 | Python (application image) | 3.13.18 (slim) |
+| gunicorn (application image) | 23.0.0 on Python below 3.10, 27.0.1 on 3.10 and above |
+
+Local image tags: `hospital-iam-keycloak:0.6.0` and `hospital-iam-app:0.6.0`.
 
 ## Repository layout
 
 ```
 hospital-iam/
   versions.env     every Part 2 pinned version and local setting
-  keycloak/        Dockerfile, realm/hospital-realm.json,
-                   scripts/seed_users.py, scripts/seed_clients.py,
-                   demo/ (empty until Part 2, Phase 1)
-  app/             app.py, requirements.txt (proof-of-concept sample apps)
+  keycloak/        Dockerfile (optimized, two-stage), .dockerignore,
+                   realm/hospital-realm.json (structure only, no users),
+                   demo/demo_users.json, demo/load_demo_users.py,
+                   scripts/seed_group_roles.py, scripts/seed_clients.py,
+                   scripts/split_demo_users.py
+  app/             app.py, requirements.txt, Dockerfile, .dockerignore
+                   (proof-of-concept sample apps)
   k8s/             cluster/, base/, overlays/local/ (empty until later phases)
   nginx/           reverse proxy configuration (empty until later phases)
   scripts/         preflight.sh, verify_realm.sh, reconcile_realm.py
@@ -104,7 +113,11 @@ hospital-iam/
   README.md
 ```
 
-## Quick start
+## Quick start (Part 1, tag `part1-complete`)
+
+These steps build and run the single-container Part 1 system. They work on the
+`part1-complete` tag, not on branch `part2`, where the Keycloak image is no longer in
+development mode and the realm file holds no users.
 
 Prerequisites: Docker, and Python 3.9 or newer.
 
@@ -146,6 +159,78 @@ app (TOTP) at first sign-in. This runs Keycloak in development mode for local
 use only, and data, including authenticator enrollments, is discarded when the
 container stops. See `docs/build-process.md` for how the image is built.
 
+## Running the Phase 1 images (branch `part2`)
+
+Prerequisites: Docker, Python 3.9 or newer (for the loader script), and a `.env` in
+which every variable has a value (see "Secrets"). Load the pinned versions and the
+secrets in every new terminal:
+
+```bash
+set -a; . ./versions.env; . ./.env; set +a
+```
+
+**1. Build the images.**
+
+```bash
+docker build -t hospital-iam-keycloak:0.6.0 ./keycloak
+docker build -t hospital-iam-app:0.6.0 ./app
+```
+
+**2. Start PostgreSQL and Keycloak** on a shared network.
+
+```bash
+export KC_DB_PASSWORD="$KEYCLOAK_DB_PASSWORD"
+docker network create iam-net
+
+docker run -d --name pg --network iam-net \
+  -e POSTGRES_USER=keycloak -e POSTGRES_DB=keycloak -e POSTGRES_PASSWORD="$KEYCLOAK_DB_PASSWORD" \
+  "$POSTGRES_IMAGE"
+until [ "$(docker logs pg 2>&1 | grep -c 'ready to accept connections')" -ge 2 ]; do sleep 2; done
+
+docker run -d --name keycloak --network iam-net -p 8080:8080 -p 9000:9000 \
+  -e KC_DB_URL=jdbc:postgresql://pg:5432/keycloak -e KC_DB_USERNAME=keycloak -e KC_DB_PASSWORD \
+  -e KC_HOSTNAME=http://localhost:8080 -e KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true -e KC_HTTP_ENABLED=true \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
+  -e EHR_CLIENT_SECRET -e WIKI_CLIENT_SECRET -e DASHBOARD_CLIENT_SECRET \
+  hospital-iam-keycloak:0.6.0
+until curl -fs http://localhost:9000/health/ready >/dev/null; do sleep 3; done
+```
+
+**3. Load the fictional users, then start the sample applications.**
+
+```bash
+python3 keycloak/demo/load_demo_users.py
+
+docker run -d --name app --network iam-net -p 5050:5050 \
+  -e KEYCLOAK_ISSUER=http://localhost:8080/realms/hospital \
+  -e KEYCLOAK_DISCOVERY_URL=http://keycloak:8080/realms/hospital/.well-known/openid-configuration \
+  -e APP_BASE_URL=http://localhost:5050 \
+  -e APP_SECRET_KEY -e EHR_CLIENT_SECRET -e WIKI_CLIENT_SECRET -e DASHBOARD_CLIENT_SECRET \
+  hospital-iam-app:0.6.0
+```
+
+- Sample applications: http://localhost:5050 (use `localhost`, not `127.0.0.1`)
+- Admin console: http://localhost:8080 (credentials from `.env`)
+- Hospital user sign-in: http://localhost:8080/realms/hospital/account
+- Health check: http://localhost:9000/health/ready
+- Realm settings as the server reports them: `bash scripts/verify_realm.sh`
+- Audit events: `docker logs keycloak 2>&1 | grep "org.keycloak.events"`
+
+Each demo user starts with the password from `DEMO_USER_PASSWORD`, marked temporary:
+the first sign-in forces enrollment of an authenticator app (TOTP) and a new password.
+
+**To stop and start over**, remove the containers and the network. This also discards
+the database, so all enrollments and password changes are lost:
+
+```bash
+docker rm -f app keycloak pg
+docker network rm iam-net
+```
+
+The `part2` images are production-shaped: Keycloak runs with `start --optimized`
+against PostgreSQL, and the application runs under gunicorn as a non-root user. They
+are served over plain HTTP on `localhost` until the TLS proxy is added in a later phase.
+
 ## Part 2 workstation checks
 
 Part 2 adds two scripts. Both are run from the repository root.
@@ -172,9 +257,9 @@ If the sign-in is refused, the script prints Keycloak's reason.
 
 ## Testing
 
-`docs/testing-guide.md` is a step-by-step walkthrough for trying out the system:
-the accounts to use, what to look at in the admin console, and ten short tests
-with expected results.
+`docs/testing-guide.md` is a step-by-step walkthrough for trying out the system as
+run in "Running the Phase 1 images": the accounts to use, what to look at in the admin
+console, and ten short tests with expected results.
 
 ## Hospital realm
 
@@ -189,11 +274,13 @@ Access is granted through groups, and each group carries one realm role.
 | Compliance | `compliance-auditor` |
 | IT | `it-admin` |
 
-`keycloak/scripts/seed_users.py` writes the group-to-role mappings and nine
-fictional users into the realm file, including one with no group and one
-disabled account for testing. Their shared demo password is fictional and for
-local development only; it is defined in that script and listed in
-`docs/testing-guide.md`. The access each role has, and how the sample
+`keycloak/scripts/seed_group_roles.py` writes the group-to-role mappings into the
+realm file. The realm file holds no users. The nine fictional users, including one
+with no group and one disabled account for testing, are listed without passwords in
+`keycloak/demo/demo_users.json` and are created in a running Keycloak by
+`keycloak/demo/load_demo_users.py`. That script sets every user's password from
+`DEMO_USER_PASSWORD` in `.env` and marks it temporary, so no shared password is stored
+in the repository or in an image. The access each role has, and how the sample
 applications enforce it, is in `docs/role-matrix.md`.
 
 ## Security configuration
@@ -208,6 +295,7 @@ applications enforce it, is in `docs/role-matrix.md`.
 | Authorization | Roles granted through groups only; enforced server-side by each application |
 | Client secrets | Supplied from the environment at startup; never stored in the repository |
 | Audit logging | User and admin events saved and written to the server log, including successful sign-ins |
+| Demo users | Not in the realm file or any image; created at load time with a temporary password taken from the environment |
 
 Details and reasoning are in `docs/build-process.md`.
 
@@ -219,5 +307,7 @@ Keep every password in `.env` to letters and digits, and make it long (20
 characters or more). The shell command `. ./.env` and `docker --env-file` read
 special characters differently, so a password containing `$`, `!`, `#`, `&`,
 quotes, or similar can work in one place and be rejected in the other.
-`.env.example` also lists `DEMO_USER_PASSWORD`, `POSTGRES_PASSWORD` and
-`KEYCLOAK_DB_PASSWORD`, which Part 2 uses from Phase 1 onward.
+`.env.example` also lists three Part 2 variables: `DEMO_USER_PASSWORD` (the temporary
+password the loader gives every demo user, at least 14 characters), `KEYCLOAK_DB_PASSWORD`
+(the database password used by PostgreSQL and Keycloak), and `POSTGRES_PASSWORD`
+(used once the cluster is built).

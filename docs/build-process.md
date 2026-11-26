@@ -11,6 +11,10 @@ the state of the project at the end of that phase.
 > tag `part1-complete`). Part 2, the Kubernetes deployment, starts at the heading
 > "Part 2: Kubernetes deployment" near the end of this file, and its phases are
 > labelled "Part 2, Phase N".
+>
+> Part 1 text describes the files as they were at that tag. In particular,
+> `seed_users.py` was replaced in Part 2, Phase 1 by `seed_group_roles.py` and the
+> demo-user loader.
 
 ---
 
@@ -936,3 +940,297 @@ the port checks.
 - Kubernetes Secrets are base64-encoded, not encrypted. That is acceptable for a
   local lab with fictional data. A real deployment would encrypt Secrets at rest
   or use an external secrets manager.
+
+---
+
+## Part 2, Phase 1: Production-shaped images
+
+### Goal
+
+Replace the development-mode Keycloak image with an optimized one that starts
+against PostgreSQL, put the sample applications in a container, and separate what
+an IT department defines once (the realm's structure) from the fictional demo
+users.
+
+### Environment
+
+| Item | Value |
+|---|---|
+| Date | 2026-11-25 |
+| Docker | 29.7.2 |
+| Keycloak image | `hospital-iam-keycloak:0.6.0` (built on Keycloak 26.7.4) |
+| Sample application image | `hospital-iam-app:0.6.0` (Python 3.13.18, gunicorn 27.0.1) |
+| Database for testing | PostgreSQL 17.12 in a container |
+
+Both image tags are local only. They are not pushed to a registry; Phase 2 loads
+them into the cluster.
+
+### Decisions
+
+**1. The Keycloak image separates build-time options from runtime options.**
+Keycloak fixes some settings when `kc.sh build` runs and bakes them into the
+server. Everything else is supplied when the container starts.
+
+| Setting | Where it is set | Reason |
+|---|---|---|
+| `KC_DB=postgres` | Build (Dockerfile) | The database vendor is fixed by the build step |
+| `KC_HEALTH_ENABLED`, `KC_METRICS_ENABLED` | Build (Dockerfile) | The health and metrics endpoints are build-time features |
+| Database URL, user, password | Runtime (environment) | They differ per environment, and the password is a secret |
+| `KC_HOSTNAME`, `KC_HTTP_ENABLED`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` | Runtime (environment) | The public address and where TLS ends are facts about a deployment, not about the image |
+| Admin bootstrap credentials, client secrets | Runtime (environment) | Secrets |
+| `--import-realm`, the success-event option | Start arguments in `CMD` | Runtime options |
+
+The container starts with `start --optimized`, which skips the build at boot, so
+every start behaves the same way and the server starts faster. The startup log
+does not contain Keycloak's "Updating the configuration" message, which is how an
+implicit rebuild would show itself.
+
+- *Two stages:* the image follows Keycloak's documented pattern, a builder stage
+  that runs `kc.sh build` and a final stage that copies the result. With nothing
+  to discard yet, the benefit is small today; it matters once providers or themes
+  are added.
+- *Pinned by digest:* both `FROM` lines carry the same digest as `KEYCLOAK_IMAGE`
+  in `versions.env`.
+- *Ownership:* files are copied with `--chown=1000:0`. User 1000 is Keycloak's own
+  non-root user, and group 0 keeps the files usable if a platform assigns a
+  different user ID.
+- *Build context:* `keycloak/.dockerignore` excludes `scripts/` and `demo/`, so
+  the demo users cannot enter an image even by accident.
+
+**2. The success-event option stays a runtime argument.**
+Part 1 turned on logging of successful sign-ins with
+`--spi-events-listener--jboss-logging--success-level=info`. It was tested whether
+`--optimized` accepts that option at start or whether it has to move into the
+build stage. It is accepted at start: with it in `CMD`, an administrator sign-in
+is logged as a `LOGIN` event at INFO level. It therefore stays in `CMD`, next to
+`--import-realm`.
+
+**3. Realm structure and demo users are separate.**
+`hospital-realm.json` now holds what an IT department defines once: roles,
+groups and their role mappings, clients, the mandatory-OTP flow, policies, and
+event settings. The nine fictional users, and the shared demo password that was
+stored with them, are no longer in the realm file or in any image.
+
+- `keycloak/demo/demo_users.json` lists the nine users with no passwords.
+- `keycloak/scripts/split_demo_users.py` did the one-time move. It refuses to run
+  unless the realm file holds exactly the nine expected users, and it changes
+  nothing on a second run. Apart from the removed `users` list, the realm file is
+  unchanged.
+- `keycloak/scripts/seed_group_roles.py` replaces `seed_users.py`. It keeps the
+  group-to-role mapping, which is the structural part, and removes any `users`
+  list from the realm file. The group-to-role mapping is still written into the
+  realm file, for the reason given under Part 1, Phase 4.
+
+**4. A loader creates the demo users in a running Keycloak.**
+`keycloak/demo/load_demo_users.py` uses only the Python standard library, so it
+runs on a workstation, in a plain Python container, or later in a Kubernetes Job
+without installing anything.
+
+- Every user receives the password in `DEMO_USER_PASSWORD`, read from the
+  environment, never printed, and never stored. It is marked temporary, so each
+  first sign-in forces enrollment of an authenticator and a new password. That is
+  the real onboarding path, and no shared password ships anywhere.
+- It creates users through the admin REST API. Unlike a realm import, this gives
+  each user the realm's default role automatically, and groups are assigned by
+  path.
+- It is safe to repeat: a user that already exists is skipped and never modified.
+  `--remove` deletes exactly the users in `demo_users.json` and nobody else.
+- The password is checked against the realm's 14-character minimum before any
+  request is made, so a short value fails with a clear message.
+
+**5. The sample application runs under gunicorn, as a non-root user.**
+`app/Dockerfile` creates a fixed numeric user (10001) and runs
+`gunicorn --workers 1 --threads 4`.
+
+- *One worker:* login sessions are kept in a dictionary in the memory of the
+  process. Two worker processes would each hold different sessions and sign people
+  out at random, so concurrency comes from threads, and the deployment will run a
+  single replica.
+- *Numeric user:* Kubernetes can verify `runAsNonRoot` only for a numeric ID.
+- *`--worker-tmp-dir /dev/shm`:* gunicorn's heartbeat files go to memory, so the
+  container's filesystem can later be made read-only.
+- *`--no-control-socket`:* gunicorn 27 opens a management socket under the user's
+  home directory by default. This user has no home directory, and an admin socket
+  is not needed.
+- *`--access-logfile -`:* requests are logged to standard output, where
+  `docker logs` and `kubectl logs` read them.
+- The base image is pinned by digest, as `PYTHON_IMAGE` in `versions.env`, and
+  `app/.dockerignore` keeps `.env`, `.venv` and `.git` out of the image.
+
+**6. Two optional settings were added to the application.**
+`app/app.py` gained two environment variables, and both have defaults that keep
+the previous behavior.
+
+- `KEYCLOAK_DISCOVERY_URL`: the address from which the application fetches
+  Keycloak's discovery document. It defaults to the public issuer address. In a
+  cluster it can point to Keycloak's internal address while `KEYCLOAK_ISSUER`
+  stays public. With `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`, a discovery document
+  fetched through the internal name reported the issuer, the authorization
+  endpoint and the end-session endpoint on the public address (for the browser),
+  and the token and key endpoints on the internal address (for the application).
+  The ID token's issuer therefore matches the issuer the application expects, and
+  the application never needs to reach the public address from inside the
+  network.
+- `PROXY_HOPS` (default 0): how many reverse proxies stand in front of the
+  application. Only when it is above zero is Werkzeug's `ProxyFix` applied, so the
+  forwarded scheme and host are trusted. Trusting `X-Forwarded-*` headers
+  unconditionally would let anyone who can reach the application directly forge
+  them. The application builds its URLs from `APP_BASE_URL` and not from the
+  request, so this setting is a safeguard.
+
+**7. gunicorn is pinned per Python version.**
+`app/requirements.txt` pins gunicorn 23.0.0 for Python below 3.10 and 27.0.1 for
+3.10 and above. The development machine runs Python 3.9, on which gunicorn 24 and
+later cannot be installed, while the container uses Python 3.13 and should not be
+held back by that. The other pins are unchanged.
+
+**8. Secrets stay out of the images.**
+Neither image contains a credential, a client secret, an `.env` file, or the demo
+password. The Keycloak realm file carries the three client secrets as
+`${EHR_CLIENT_SECRET}`-style placeholders that Keycloak fills from its
+environment when it imports the realm. Three variables were added to `.env` in
+Part 2, Phase 0 and are used from this phase: `KEYCLOAK_DB_PASSWORD` for the
+database, `DEMO_USER_PASSWORD` for the loader, and `POSTGRES_PASSWORD` (not
+needed until the cluster phase).
+
+### Process
+
+Both `versions.env` and `.env` must be loaded in every new terminal, because the
+commands use the pinned image references and the secrets:
+
+```bash
+set -a; . ./versions.env; . ./.env; set +a
+```
+
+1. Split the demo users out of the realm file (one time):
+
+   ```bash
+   python3 keycloak/scripts/split_demo_users.py keycloak/realm/hospital-realm.json keycloak/demo/demo_users.json
+   ```
+
+2. Build both images:
+
+   ```bash
+   docker build -t hospital-iam-keycloak:0.6.0 ./keycloak
+   docker build -t hospital-iam-app:0.6.0 ./app
+   ```
+
+3. Start PostgreSQL and Keycloak on a shared network. Keycloak receives the
+   database password and the other runtime settings from the environment:
+
+   ```bash
+   export KC_DB_PASSWORD="$KEYCLOAK_DB_PASSWORD"
+   docker network create iam-net
+   docker run -d --name pg --network iam-net \
+     -e POSTGRES_USER=keycloak -e POSTGRES_DB=keycloak -e POSTGRES_PASSWORD="$KEYCLOAK_DB_PASSWORD" \
+     "$POSTGRES_IMAGE"
+   until [ "$(docker logs pg 2>&1 | grep -c 'ready to accept connections')" -ge 2 ]; do sleep 2; done
+
+   docker run -d --name keycloak --network iam-net -p 8080:8080 -p 9000:9000 \
+     -e KC_DB_URL=jdbc:postgresql://pg:5432/keycloak -e KC_DB_USERNAME=keycloak -e KC_DB_PASSWORD \
+     -e KC_HOSTNAME=http://localhost:8080 -e KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true -e KC_HTTP_ENABLED=true \
+     -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
+     -e EHR_CLIENT_SECRET -e WIKI_CLIENT_SECRET -e DASHBOARD_CLIENT_SECRET \
+     hospital-iam-keycloak:0.6.0
+   until curl -fs http://localhost:9000/health/ready >/dev/null; do sleep 3; done
+   ```
+
+4. Load the demo users, then start the sample applications:
+
+   ```bash
+   python3 keycloak/demo/load_demo_users.py
+   docker run -d --name app --network iam-net -p 5050:5050 \
+     -e KEYCLOAK_ISSUER=http://localhost:8080/realms/hospital \
+     -e KEYCLOAK_DISCOVERY_URL=http://keycloak:8080/realms/hospital/.well-known/openid-configuration \
+     -e APP_BASE_URL=http://localhost:5050 \
+     -e APP_SECRET_KEY -e EHR_CLIENT_SECRET -e WIKI_CLIENT_SECRET -e DASHBOARD_CLIENT_SECRET \
+     hospital-iam-app:0.6.0
+   ```
+
+The `-e NAME` form without a value passes the exported variable, so no secret
+appears on a command line. The Postgres wait loop looks for the "ready" message
+twice because the official image starts a temporary server during initialization
+and then restarts.
+
+### Issues encountered
+
+**gunicorn 24 and later cannot be installed on Python 3.9.** The first choice,
+the newest gunicorn, failed to resolve on the development machine's interpreter.
+The pin was split by Python version (decision 7), and both lines were checked.
+
+**gunicorn's default control socket needs a home directory.** gunicorn 27 tries to
+create a socket under the running user's home directory. The application's user
+has none, and a read-only filesystem would not allow it either. The socket is
+disabled with `--no-control-socket`.
+
+**PostgreSQL reports ready before it is.** The official image starts a temporary
+server to initialize the database and then restarts. Checking readiness once can
+succeed during the first start, and Keycloak would then fail to connect. The start
+script waits for the ready message to appear twice.
+
+**An empty image reference.** In a terminal where `versions.env` had not been
+loaded, `docker run ... "$POSTGRES_IMAGE"` received an empty value and failed with
+"invalid reference format". Every command sequence in this project therefore
+begins by loading `versions.env` and `.env`.
+
+### Observations
+
+- A new user's required actions run in a fixed order: authenticator enrollment
+  first, then the password change.
+- The demo users all carry a temporary password, so the first sign-in of every
+  user exercises the onboarding path. The testing guide has a section for this.
+- Removing the `pg` container discards the identity data, including every
+  authenticator enrollment, and the next start imports the realm again into an
+  empty database. While the container exists, restarting Keycloak does not
+  re-import the realm: import runs only when the realm does not exist.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Keycloak starts with `start --optimized` against PostgreSQL | Confirmed: the log shows `Profile prod activated` and `Realm 'hospital' imported`, and no "Updating the configuration" message |
+| Realm values on the running server (`scripts/verify_realm.sh`) | `ssoSessionIdleTimeout` 900, `ssoSessionMaxLifespan` 43200, password policy `length(14)`, not username, not email, `passwordHistory(5)`, browser flow `browser-mandatory-otp` |
+| The password policy is enforced | A password equal to the username and a password equal to the email were each rejected; a different strong password was accepted |
+| Successful sign-ins are logged with the option as a start argument | Confirmed: an administrator sign-in appears as `type="LOGIN"` |
+| Realm file and demo file | The realm file has no `users` list. `demo_users.json` has nine users and no credentials. The old demo password appears in neither |
+| `load_demo_users.py` | Creates nine users; a second run leaves all nine unchanged; a short `DEMO_USER_PASSWORD` and a wrong admin password each fail with a clear message |
+| Demo users after loading | Group membership, the group's role, and the default role are present; every user has a temporary password; `former.employee` is disabled |
+| First sign-in through a browser | Forced authenticator enrollment and password change, then arrival at the EHR page with the role `nurse` |
+| Application discovery through the internal address | Issuer and browser endpoints on the public address; token and key endpoints on the internal address |
+| Application container | Runs as `10001:10001`, with exactly one gunicorn worker; `/srv` holds only `app.py` and `requirements.txt` |
+| Keycloak container | Runs as user 1000 |
+| No secrets in the images | None of the eight secret values appears in either image's build history or environment; the image's realm file holds only `${...}` placeholders |
+
+### State at the end of Part 2, Phase 1
+
+```
+hospital-iam/
+  versions.env
+  keycloak/
+    Dockerfile           optimized, two-stage, pinned by digest
+    .dockerignore
+    realm/hospital-realm.json    structure only, no users
+    demo/demo_users.json         nine fictional users, no passwords
+    demo/load_demo_users.py      creates or removes them in a running Keycloak
+    scripts/seed_group_roles.py  group-to-role mappings
+    scripts/seed_clients.py
+    scripts/split_demo_users.py  one-time split (kept for the record)
+  app/
+    Dockerfile  .dockerignore  app.py  requirements.txt
+```
+
+### Limitations
+
+- Keycloak and the application are reached over plain HTTP on `localhost`. TLS,
+  the public hostnames, and the proxy arrive in later phases, and the client
+  redirect addresses in the realm still point to `http://localhost:5050`.
+- The images exist only on the local Docker daemon. Loading them into the cluster
+  is done when the cluster exists.
+- The PostgreSQL container used here is a test database with a throwaway
+  credential. It is not the cluster's database, which has persistent storage and
+  its own configuration.
+- The sample application keeps login sessions in memory, so it must stay at one
+  replica and a restart signs everyone out.
+- The Part 1 quick start no longer works on this branch, because the Keycloak
+  image is no longer in development mode and the realm has no users. Part 1 can
+  still be built from the `part1-complete` tag.
